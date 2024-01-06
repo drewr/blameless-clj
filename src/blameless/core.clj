@@ -27,9 +27,7 @@
    (fn
      ([tok org offset limit order-by]
       (incidents* tok org offset limit order-by nil))
-     ;; last-count so we invalidate the local cache when new items
-     ;; show up
-     ([tok org offset limit order-by last-count]
+     ([tok org offset limit order-by cache-key]
       (let [resp (-> (http/get
                       (hostname org)
                       {:headers {:authorization (str "Bearer " tok)}
@@ -64,7 +62,7 @@
                    (new-offset resp)
                    (new-limit resp)
                    order-by
-                   (count is)))))))))))
+                   :NOT_IMPLEMENTED))))))))))
 
 (def incidents
   (fn [tok org]
