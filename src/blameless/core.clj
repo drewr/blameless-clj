@@ -7,8 +7,21 @@
 
 (def MAX_INCIDENTS 100)
 
-(defn hostname [org]
-  (format "https://%s.blameless.io/api/v1/incidents" org))
+(defn url-base [org]
+  (format "https://%s.blameless.io" org))
+
+(defn incident-url [org]
+  (str (url-base org) "/api/v1/incidents"))
+
+(defn token-url [org]
+  (str (url-base org) "/api/v2/identity/token"))
+
+(defn get-token [org key]
+  (->
+   (http/post (token-url org) {:headers {:authorization key}})
+   :body
+   (json/decode true)
+   :access_token))
 
 (defn utc-time [epoch]
   (-> epoch
@@ -25,11 +38,11 @@
 (defonce incidents*
   (memoize
    (fn
-     ([tok org offset limit order-by]
-      (incidents* tok org offset limit order-by nil))
-     ([tok org offset limit order-by cache-key]
+     ([org tok offset limit order-by]
+      (incidents* org tok offset limit order-by nil))
+     ([org tok offset limit order-by cache-key]
       (let [resp (-> (http/get
-                      (hostname org)
+                      (incident-url org)
                       {:headers {:authorization (str "Bearer " tok)}
                        :query-params {:offset offset
                                       :limit limit
@@ -58,15 +71,15 @@
                  (concat
                   (rest is)
                   (incidents*
-                   tok org
+                   org tok
                    (new-offset resp)
                    (new-limit resp)
                    order-by
                    :NOT_IMPLEMENTED))))))))))
 
 (def incidents
-  (fn [tok org]
-    (incidents* tok org 0 MAX_INCIDENTS "created")))
+  (fn [org tok]
+    (incidents* org tok 0 MAX_INCIDENTS "created")))
 
 ;; Mostly taken from leontalbot at
 ;; https://stackoverflow.com/a/48244002, thanks!
