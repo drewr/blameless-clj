@@ -7,8 +7,20 @@
 
 (def MAX_INCIDENTS 100)
 
+(defn select-keys* [m paths]
+  (into {} (map (fn [p]
+                  (if (fn? (peek p))
+                    (let [f (peek p)
+                          all-but-the-fn (-> p reverse rest reverse)]
+                      [(peek all-but-the-fn) (f (get-in m all-but-the-fn))])
+                    [(peek p) (get-in m p)])))
+        paths))
+
 (defn url-base [org]
   (format "https://%s.blameless.io" org))
+
+(defn events-url [org incident]
+  (str (url-base org) (format "/api/v1/incidents/%s/events" incident)))
 
 (defn incident-url [org]
   (str (url-base org) "/api/v1/incidents"))
@@ -34,6 +46,23 @@
 
 (defn excel-time [epoch]
   (time/format "yyyy-MM-dd HH:mm:ss" (utc-time epoch)))
+
+(defn days-ago-millis [num-days]
+  (time/to-millis-from-epoch
+   (time/minus
+    (time/zoned-date-time) (time/days num-days))))
+
+(defn incidents-since [org tok offset limit order-by epoch-millis]
+  (let [resp (-> (http/get
+                  (incident-url org)
+                  {:headers {:authorization (str "Bearer " tok)}
+                   :query-params {:offset offset
+                                  :limit limit
+                                  :order_by order-by
+                                  :created_from (str
+                                                 (int (/ epoch-millis 1000)))}})
+                 :body (json/decode true))]
+    resp))
 
 (defonce incidents*
   (memoize
@@ -81,6 +110,39 @@
   (fn [org tok]
     (incidents* org tok 0 MAX_INCIDENTS "created")))
 
+(defn set-incident-status! [org tok id status]
+  (-> (http/put
+       (format "%s/%s" (incident-url org) id)
+       {:headers {:authorization (str "Bearer " tok)
+                  :content-type "application/json"}
+        :body (json/encode {:status status})})
+      :body
+      (json/decode true)
+      (select-keys* [[:ok]
+                     [:incident :_id]
+                     [:incident :type]
+                     [:incident :severity]
+                     [:incident :status]
+                     [:incident :description]
+                     [:events count]])))
+
+(defn events [org tok incident]
+  (let [resp (-> (http/get
+                  (events-url org incident)
+                  {:headers {:authorization (str "Bearer " tok)}
+                   :query-params {}})
+                 :body (json/decode true))]
+    resp))
+
+(defn incident-scorecard [org tok incident]
+  (->> (events org tok incident)
+       :events
+       (map #(select-keys* % [[:source :profile :email]]))
+       (reduce #(update-in %1 [(:email %2)] (fnil inc 0)) {})))
+
+(def severity-count
+  (comp))
+
 ;; Mostly taken from leontalbot at
 ;; https://stackoverflow.com/a/48244002, thanks!
 (defn write-csv
@@ -107,16 +169,6 @@
   [file maps]
   (->> maps maps->csv-data (write-csv file)))
 
-(defn select-keys* [m paths]
-  (into {} (map (fn [p]
-                  (if (fn? (peek p))
-                    (let [f (peek p)
-                          all-but-the-fn (-> p reverse rest reverse)]
-                      [(peek all-but-the-fn) (f (get-in m all-but-the-fn))])
-                    [(peek p) (get-in m p)])))
-        paths))
-
-
 (defn creator-email [incident]
   (let [f #(= (:creator incident) (:_id %))]
     (-> (first (filter f (:team incident)))
@@ -126,15 +178,24 @@
 (defn enhance-incident [i]
   (assoc (ordered-map)
     :id (-> i :_id)
-    :created-UTC (-> i :created :$date excel-time str)
+    :created-utc (-> i :created :$date excel-time str)
     :type (-> i :type)
     :severity (-> i :severity)
     :creator (creator-email i)
     :seconds-to-resolve (-> i :time_to_resolution)
     :hours-to-resolve (int (/ (-> i :time_to_resolution) 3600))
     :days-to-resolve (int (/ (-> i :time_to_resolution) 3600 24))
+    :hours-of-customer-impact (float
+                               (/ (-> i :duration_of_customer_impact) 3600))
     :seconds-of-customer-impact (-> i :duration_of_customer_impact)
     :description (-> i :description)))
+
+(defn just-severity [sev]
+  (when (string? sev)
+    (re-find #"[^:]+" sev)))
+
+(defn just-ymd [excel-time]
+  (re-find #"[^\s]+" excel-time))
 
 (comment
   (write-csv-from-maps
