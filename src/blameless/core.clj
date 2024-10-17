@@ -52,30 +52,16 @@
    (time/minus
     (time/zoned-date-time) (time/days num-days))))
 
-(defn incidents-since [org tok offset limit order-by epoch-millis]
-  (let [resp (-> (http/get
-                  (incident-url org)
-                  {:headers {:authorization (str "Bearer " tok)}
-                   :query-params {:offset offset
-                                  :limit limit
-                                  :order_by order-by
-                                  :created_from (str
-                                                 (int (/ epoch-millis 1000)))}})
-                 :body (json/decode true))]
-    resp))
-
-(defonce incidents*
+(def incidents*
   (memoize
    (fn
-     ([org tok offset limit order-by]
-      (incidents* org tok offset limit order-by nil))
-     ([org tok offset limit order-by cache-key]
+     ([org tok query-params]
+      (incidents* org tok query-params nil))
+     ([org tok query-params cache-key]
       (let [resp (-> (http/get
                       (incident-url org)
                       {:headers {:authorization (str "Bearer " tok)}
-                       :query-params {:offset offset
-                                      :limit limit
-                                      :order_by order-by}})
+                       :query-params query-params})
                      :body (json/decode true))
             more-items? (fn [r]
                           (let [p (:pagination r)
@@ -89,11 +75,9 @@
                         MAX_INCIDENTS)
             is (:incidents resp)]
         (prn 'incidents*
-             {:offset offset
-              :limit limit
-              :order_by order-by
-              :total-count (-> resp :pagination :count)
-              :this-count (count is)})
+             (merge query-params
+                    {:total-count (-> resp :pagination :count)
+                     :this-count (count is)}))
         (lazy-seq
          (when (seq is)
            (cons (first is)
@@ -101,14 +85,26 @@
                   (rest is)
                   (incidents*
                    org tok
-                   (new-offset resp)
-                   (new-limit resp)
-                   order-by
+                   (merge query-params
+                          {:offset (new-offset resp)
+                           :limit (new-limit resp)})
                    :NOT_IMPLEMENTED))))))))))
 
 (def incidents
   (fn [org tok]
-    (incidents* org tok 0 MAX_INCIDENTS "created")))
+    (incidents*
+     org tok {:offset 0
+              :limit MAX_INCIDENTS
+              :order_by "created"})))
+
+(defn incidents-since [org tok epoch-millis]
+  (incidents*
+   org tok
+   {:offset 0
+    :limit MAX_INCIDENTS
+    :order_by "created"
+    :created_from (str
+                   (int (/ epoch-millis 1000)))}))
 
 (defn set-incident-status! [org tok id status]
   (-> (http/put
@@ -200,7 +196,7 @@
 (comment
   (write-csv-from-maps
    "/tmp/blameless.csv"
-   (->> (incidents tok "packet")
+   (->> (incidents "packet" tok)
         (map
          #(select-keys* % [[:_id]
                            [:created :$date (comp str excel-time)]
@@ -210,5 +206,5 @@
 
   (write-csv-from-maps
    "/tmp/blameless.csv"
-   (->> (incidents tok "packet")
+   (->> (incidents "packet" tok)
         (map enhance-incident))))
